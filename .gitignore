@@ -1,0 +1,4 @@
+venv/
+rating.json
+__pycache__/
+*.pyc
