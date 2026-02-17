@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 from neiro import is_message_bad
@@ -102,10 +103,14 @@ async def _cleanup_task(bot, chat_id, user_msg_id, bot_msg, delay: float) -> Non
 
 async def reply_and_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, delay: float = 2.0) -> None:
     """Отправляет ответ, в фоне удаляет сообщение юзера и свой ответ через delay сек."""
-    chat_id = update.effective_chat.id
-    user_msg_id = update.message.message_id
-    msg = await context.bot.send_message(chat_id=chat_id, text=text)
-    asyncio.create_task(_cleanup_task(context.bot, chat_id, user_msg_id, msg, delay))
+    try:
+        chat_id = update.effective_chat.id
+        user_msg_id = update.message.message_id if update.message else None
+        msg = await context.bot.send_message(chat_id=chat_id, text=text)
+        if user_msg_id:
+            asyncio.create_task(_cleanup_task(context.bot, chat_id, user_msg_id, msg, delay))
+    except BadRequest:
+        pass  # Message to be replied not found и т.п. — игнорируем
 
 
 def get_position(rating: int) -> str:
@@ -220,14 +225,17 @@ async def cmd_danilarating(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Команда /danilarating — показывает социальный рейтинг. Удаляем только сообщение юзера."""
     try:
         await update.message.delete()
-    except Exception:
+    except (BadRequest, Exception):
         pass
     rating = get_rating()
     position = get_position(rating)
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id,
-        text=f"📊 Социальный рейтинг Данилы: {rating}\n📍 Положение: {position}",
-    )
+    try:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"📊 Социальный рейтинг Данилы: {rating}\n📍 Положение: {position}",
+        )
+    except BadRequest:
+        pass
 
 
 def main() -> None:
@@ -251,6 +259,12 @@ def main() -> None:
     # Проверка сообщений Данилы нейросетью (перед block_chemiakin, т.к. Danila != chemiakin)
     app.add_handler(MessageHandler(DanilaFilter() & filters.TEXT, check_danila_message))
 
+    async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if isinstance(context.error, BadRequest):
+            return  # Message to be replied not found и т.п. — игнорируем
+        raise context.error
+
+    app.add_error_handler(error_handler)
     print("Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
