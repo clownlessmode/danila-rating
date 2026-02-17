@@ -112,6 +112,18 @@ def add_to_user_rating(user_id: int, delta: int) -> int:
     return users[uid]
 
 
+def get_user_display(user_id: int) -> str | None:
+    """Отображаемое имя из сохранённых данных."""
+    return get_data().get("user_info", {}).get(str(user_id))
+
+
+def save_user_display(user_id: int, display: str) -> None:
+    """Сохраняет отображаемое имя пользователя."""
+    data = get_data()
+    data.setdefault("user_info", {})[str(user_id)] = display
+    save_data(data)
+
+
 async def _cleanup_task(bot, chat_id, user_msg_id, bot_msg, delay: float) -> None:
     """Фоновая задача: удалить сообщения через delay сек."""
     try:
@@ -185,6 +197,7 @@ def _resolve_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if target.id == sender.id:
             return ("self", None)
         name = f"@{target.username}" if target.username else (target.first_name or str(target.id))
+        save_user_display(target.id, name)
         return (target.id, name)
 
     # 2. @username в аргументах
@@ -199,6 +212,7 @@ def _resolve_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if target_id is not None:
             if target_id == sender.id:
                 return ("self", None)
+            save_user_display(target_id, f"@{username}")
             return (target_id, f"@{username}")
 
     # 3. Ищем в entities (text_mention)
@@ -209,6 +223,7 @@ def _resolve_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
                 if target.id == sender.id:
                     return ("self", None)
                 name = f"@{target.username}" if target.username else (target.first_name or str(target.id))
+                save_user_display(target.id, name)
                 return (target.id, name)
 
     return None
@@ -306,12 +321,19 @@ async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not users:
         text = "📊 Топ пуст — пока никто не получил рейтинг"
     else:
+        users_by_id = context.application.bot_data.get("users_by_id", {})
         users_by_username = context.application.bot_data.get("users_by_username", {})
         id_to_username = {uid: f"@{u}" for u, uid in users_by_username.items()}
         sorted_users = sorted(users.items(), key=lambda x: int(x[1]), reverse=True)[:15]
         lines = ["📊 Топ по рейтингу:"]
         for i, (uid, rating) in enumerate(sorted_users, 1):
-            display = id_to_username.get(int(uid), f"ID:{uid}")
+            uid_int = int(uid)
+            display = (
+                get_user_display(uid_int)
+                or users_by_id.get(uid_int)
+                or id_to_username.get(uid_int)
+                or f"ID:{uid}"
+            )
             lines.append(f"{i}. {display}: {rating}")
         text = "\n".join(lines)
     try:
@@ -399,11 +421,13 @@ def main() -> None:
 
     app.add_error_handler(error_handler)
 
-    # Кэш сообщений для реакций и username->user_id для /plus @user
+    # Кэш: сообщения для реакций, username->user_id, user_id->display
     msg_cache = {}
     users_by_username = {}
+    users_by_id = {}
     app.bot_data["msg_cache"] = msg_cache
     app.bot_data["users_by_username"] = users_by_username
+    app.bot_data["users_by_id"] = users_by_id
     orig_process = app.process_update
     async def process_with_cache(update):
         if update.message and update.message.from_user:
@@ -411,10 +435,16 @@ def main() -> None:
             u = msg.from_user
             key = (msg.chat.id, msg.message_id)
             msg_cache[key] = u.id
+            display = f"@{u.username}" if u.username else (u.first_name or str(u.id))
+            users_by_id[u.id] = display
+            save_user_display(u.id, display)
             if u.username:
                 users_by_username[u.username.lower()] = u.id
             if msg.reply_to_message and msg.reply_to_message.from_user:
                 ru = msg.reply_to_message.from_user
+                ru_display = f"@{ru.username}" if ru.username else (ru.first_name or str(ru.id))
+                users_by_id[ru.id] = ru_display
+                save_user_display(ru.id, ru_display)
                 if ru.username:
                     users_by_username[ru.username.lower()] = ru.id
             if len(msg_cache) > 5000:
