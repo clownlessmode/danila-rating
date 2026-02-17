@@ -11,6 +11,8 @@ from pathlib import Path
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
+from neiro import is_message_bad
+
 # Файл для хранения рейтинга
 DATA_FILE = Path(__file__).parent / "rating.json"
 
@@ -133,6 +135,16 @@ async def cmd_danila_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 CHEMIAKIN_USERNAME = "chemiakin"
 PURPLETOOTH_USERNAME = "purpletooth"
+# Юзернейм Данилы — его сообщения проверяет нейросеть
+DANILA_USERNAME = "danilalox"  # укажи реальный @username в Telegram
+
+class DanilaFilter(filters.MessageFilter):
+    """Фильтр: True если сообщение от Данилы."""
+    def filter(self, message):
+        if not message or not message.from_user:
+            return False
+        return (message.from_user.username or "").lower() == DANILA_USERNAME
+
 
 class BlockChimiakin(filters.MessageFilter):
     """Фильтр: True если сообщение от chemiakin."""
@@ -140,6 +152,23 @@ class BlockChimiakin(filters.MessageFilter):
         if not message or not message.from_user:
             return False
         return (message.from_user.username or "").lower() == CHEMIAKIN_USERNAME
+
+
+async def check_danila_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Проверяет сообщения Данилы через нейросеть. При нарушении — -10."""
+    text = (update.message.text or "").strip()
+    if not text or text.startswith("/"):
+        return
+    # Запускаем в executor, чтобы не блокировать event loop
+    is_bad = await asyncio.to_thread(is_message_bad, text)
+    if is_bad:  # если норм — молчим, не пишем ничего
+        rating = get_rating()
+        rating -= 10
+        save_rating(rating)
+        await reply_and_cleanup(
+            update, context,
+            f"НейроРодион посчитал что ты ужасно поступаешь -10\nРейтинг Данилы: {rating}",
+        )
 
 
 async def block_chemiakin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -163,6 +192,19 @@ async def roast_self_liker(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await reply_and_cleanup(
             update, context, "Ты еблан, самолайк — это как самоотсос, че ты делаешь?"
         )
+
+
+HELP_TEXT = """📋 Команды бота:
+
+/danilalox — минус 10 к рейтингу
+/danilaklass — плюс 10 к рейтингу
+/danilarating — показать текущий рейтинг и положение
+/help — этот список"""
+
+
+async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /help — список команд."""
+    await reply_and_cleanup(update, context, HELP_TEXT)
 
 
 async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -196,8 +238,9 @@ def main() -> None:
 
     app = Application.builder().token(token).build()
 
-    # danilarating — первым, чтобы chemiakin тоже мог спрашивать рейтинг
+    # danilarating и help — первыми, чтобы chemiakin тоже мог использовать
     app.add_handler(CommandHandler("danilarating", cmd_danilarating))
+    app.add_handler(CommandHandler("help", cmd_help))
     # Блокируем chemiakin для всего остального
     app.add_handler(MessageHandler(BlockChimiakin(), block_chemiakin))
     app.add_handler(CommandHandler("clear", cmd_clear))
@@ -205,6 +248,8 @@ def main() -> None:
     app.add_handler(CommandHandler("danilaklass", cmd_danila_klass))
     app.add_handler(CommandHandler("danila", cmd_danila_wrapper))
     app.add_handler(MessageHandler(filters.User(user_id=SELF_LIKER_ID) & filters.TEXT, roast_self_liker))
+    # Проверка сообщений Данилы нейросетью (перед block_chemiakin, т.к. Danila != chemiakin)
+    app.add_handler(MessageHandler(DanilaFilter() & filters.TEXT, check_danila_message))
 
     print("Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
