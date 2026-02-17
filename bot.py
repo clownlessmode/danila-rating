@@ -3,6 +3,7 @@
 Danila Rating Bot - Telegram бот для отслеживания социального рейтинга Данилы
 """
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -84,6 +85,20 @@ def save_rating(rating: int) -> None:
         json.dump({"rating": rating}, f, ensure_ascii=False, indent=2)
 
 
+async def reply_and_cleanup(update: Update, text: str, delay: float = 2.0) -> None:
+    """Отправляет ответ, удаляет сообщение юзера и свой ответ через delay сек."""
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+    msg = await update.message.reply_text(text)
+    await asyncio.sleep(delay)
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+
 def get_position(rating: int) -> str:
     """Возвращает положение по рейтингу."""
     # Сортируем по убыванию балла
@@ -99,7 +114,7 @@ async def cmd_danilalox(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     rating = get_rating()
     rating -= 10
     save_rating(rating)
-    await update.message.reply_text(f"📉 -10. Рейтинг Данилы: {rating}")
+    await reply_and_cleanup(update, f"📉 -10. Рейтинг Данилы: {rating}")
 
 
 async def cmd_danila_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -107,7 +122,7 @@ async def cmd_danila_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE)
     if context.args and context.args[0].lower() == "klass":
         await cmd_danila_klass(update, context)
     else:
-        await update.message.reply_text("Использование: /danila klass — +10 к рейтингу")
+        await reply_and_cleanup(update, "Использование: /danila klass — +10 к рейтингу")
 
 CHEMIAKIN_USERNAME = "chemiakin"
 PURPLETOOTH_USERNAME = "purpletooth"
@@ -130,7 +145,7 @@ async def cmd_danila_klass(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     rating = get_rating()
     rating += 10
     save_rating(rating)
-    await update.message.reply_text(f"📈 +10. Рейтинг Данилы: {rating}")
+    await reply_and_cleanup(update, f"📈 +10. Рейтинг Данилы: {rating}")
 
 
 SELF_LIKER_ID = 5301118406
@@ -138,8 +153,8 @@ SELF_LIKER_ID = 5301118406
 async def roast_self_liker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Если пишет юзер 5301118406 — ростим за самолайк."""
     if update.effective_user and update.effective_user.id == SELF_LIKER_ID:
-        await update.message.reply_text(
-            "Ты еблан, самолайк — это как самоотсос, че ты делаешь?"
+        await reply_and_cleanup(
+            update, "Ты еблан, самолайк — это как самоотсос, че ты делаешь?"
         )
 
 
@@ -149,16 +164,16 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if username != PURPLETOOTH_USERNAME:
         return  # не отвечаем чужим
     save_rating(0)
-    await update.message.reply_text("✅ Рейтинг сброшен на 0")
+    await reply_and_cleanup(update, "✅ Рейтинг сброшен на 0")
 
 
 async def cmd_danilarating(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда /danilarating — показывает социальный рейтинг и положение."""
     rating = get_rating()
     position = get_position(rating)
-    await update.message.reply_text(
-        f"📊 Социальный рейтинг Данилы: {rating}\n"
-        f"📍 Положение: {position}"
+    await reply_and_cleanup(
+        update,
+        f"📊 Социальный рейтинг Данилы: {rating}\n📍 Положение: {position}",
     )
 
 
