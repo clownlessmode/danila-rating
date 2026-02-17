@@ -158,6 +158,10 @@ async def roast_self_liker(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
 
 
+REACTION_POSITIVE = frozenset(("❤️", "👍", "🔥", "🥰", "👏", "😁", "🎉", "🤩", "🙏", "👌", "😍", "❤️‍🔥", "💯", "🤣", "🏆", "🍾", "💋", "😇", "🤝", "🤗", "🤪", "🆒", "💗", "😘", "😎", "🕊️", "😈"))
+REACTION_NEGATIVE = frozenset(("👎", "😱", "🤬", "😢", "🤮", "💩", "🤡", "🥱", "🥴", "💔", "🤨", "😐", "🖕", "😴", "😭", "🤓", "😨", "😡"))
+
+
 def _get_emoji_from_reaction(r) -> str:
     """Извлекает emoji из ReactionType."""
     if hasattr(r, "emoji"):
@@ -224,11 +228,11 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
         return  # нет в кэше или сам себе
     for r in mr.new_reaction:
         emoji = _get_emoji_from_reaction(r)
-        if emoji == "🤡":
-            add_to_user_rating(author_id, -10)
-            return
-        if emoji == "🔥":
+        if emoji in REACTION_POSITIVE:
             add_to_user_rating(author_id, 10)
+            return
+        if emoji in REACTION_NEGATIVE:
+            add_to_user_rating(author_id, -10)
             return
 
 
@@ -327,8 +331,7 @@ HELP_TEXT = """📋 Команды бота:
 /my @username — рейтинг пользователя
 /minus — ответь на сообщение или /minus @user: -10
 /plus — ответь на сообщение или /plus @user: +10
-Реакция 🤡 на сообщение — -10 автору (тихо)
-Реакция 🔥 на сообщение — +10 автору (тихо)
+Реакции на сообщение: положительные (+10) или отрицательные (-10), тихо
 Самому себе менять рейтинг нельзя
 /help — этот список"""
 
