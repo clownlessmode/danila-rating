@@ -85,19 +85,25 @@ def save_rating(rating: int) -> None:
         json.dump({"rating": rating}, f, ensure_ascii=False, indent=2)
 
 
-async def reply_and_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, delay: float = 2.0) -> None:
-    """Отправляет ответ, удаляет сообщение юзера и свой ответ через delay сек."""
-    chat_id = update.effective_chat.id
-    msg = await context.bot.send_message(chat_id=chat_id, text=text)
+async def _cleanup_task(bot, chat_id, user_msg_id, bot_msg, delay: float) -> None:
+    """Фоновая задача: удалить сообщения через delay сек."""
     try:
-        await update.message.delete()
+        await bot.delete_message(chat_id=chat_id, message_id=user_msg_id)
     except Exception:
         pass
     await asyncio.sleep(delay)
     try:
-        await msg.delete()
+        await bot_msg.delete()
     except Exception:
         pass
+
+
+async def reply_and_cleanup(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str, delay: float = 2.0) -> None:
+    """Отправляет ответ, в фоне удаляет сообщение юзера и свой ответ через delay сек."""
+    chat_id = update.effective_chat.id
+    user_msg_id = update.message.message_id
+    msg = await context.bot.send_message(chat_id=chat_id, text=text)
+    asyncio.create_task(_cleanup_task(context.bot, chat_id, user_msg_id, msg, delay))
 
 
 def get_position(rating: int) -> str:
@@ -169,12 +175,16 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def cmd_danilarating(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /danilarating — показывает социальный рейтинг и положение."""
+    """Команда /danilarating — показывает социальный рейтинг. Удаляем только сообщение юзера."""
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
     rating = get_rating()
     position = get_position(rating)
-    await reply_and_cleanup(
-        update, context,
-        f"📊 Социальный рейтинг Данилы: {rating}\n📍 Положение: {position}",
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=f"📊 Социальный рейтинг Данилы: {rating}\n📍 Положение: {position}",
     )
 
 
@@ -186,13 +196,14 @@ def main() -> None:
 
     app = Application.builder().token(token).build()
 
-    # Сначала блокируем chemiakin — его сообщения игнорируем полностью
+    # danilarating — первым, чтобы chemiakin тоже мог спрашивать рейтинг
+    app.add_handler(CommandHandler("danilarating", cmd_danilarating))
+    # Блокируем chemiakin для всего остального
     app.add_handler(MessageHandler(BlockChimiakin(), block_chemiakin))
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("danilalox", cmd_danilalox))
     app.add_handler(CommandHandler("danilaklass", cmd_danila_klass))
     app.add_handler(CommandHandler("danila", cmd_danila_wrapper))
-    app.add_handler(CommandHandler("danilarating", cmd_danilarating))
     app.add_handler(MessageHandler(filters.User(user_id=SELF_LIKER_ID) & filters.TEXT, roast_self_liker))
 
     print("Бот запущен!")
