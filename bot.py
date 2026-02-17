@@ -206,13 +206,56 @@ async def roast_self_liker(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
 
 
-def _apply_rating_to_user(chat_id: int, message_id: int, delta: int, cache: dict, emoji: str) -> int | None:
-    """Применяет delta к автору сообщения. Возвращает новый рейтинг или None."""
-    key = (chat_id, message_id)
-    author_id = cache.get(key)
-    if author_id is None:
+def _get_emoji_from_reaction(r) -> str:
+    """Извлекает emoji из ReactionType."""
+    if hasattr(r, "emoji"):
+        return r.emoji or ""
+    return getattr(r, "emoji", "") or ""
+
+
+def _resolve_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> tuple | None:
+    """
+    Определяет целевого пользователя: из reply или из @username.
+    Возвращает (user_id, display_name) или ("self", None) если сам себе, или None если не найден.
+    """
+    msg = update.message
+    sender = update.effective_user
+    if not msg or not sender:
         return None
-    return add_to_user_rating(author_id, delta)
+
+    # 1. Reply на сообщение
+    if msg.reply_to_message and msg.reply_to_message.from_user:
+        target = msg.reply_to_message.from_user
+        if target.id == sender.id:
+            return ("self", None)
+        name = f"@{target.username}" if target.username else (target.first_name or str(target.id))
+        return (target.id, name)
+
+    # 2. @username в аргументах
+    args = context.args or []
+    users_cache = context.application.bot_data.setdefault("users_by_username", {})
+
+    for arg in args:
+        username = arg.lstrip("@").lower()
+        if not username:
+            continue
+        target_id = users_cache.get(username)
+        if target_id is not None:
+            if target_id == sender.id:
+                return ("self", None)
+            return (target_id, f"@{username}")
+
+    # 3. Ищем в entities (text_mention)
+    if msg.entities:
+        for ent in msg.entities:
+            if ent.type == "text_mention" and hasattr(ent, "user") and ent.user:
+                target = ent.user
+                if target.id == sender.id:
+                    return ("self", None)
+                name = f"@{target.username}" if target.username else (target.first_name or str(target.id))
+                return (target.id, name)
+
+    return None
 
 
 async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -220,55 +263,68 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
     mr = update.message_reaction
     if not mr or not mr.new_reaction:
         return
+    reactor_id = mr.user.id if mr.user else None
     cache = context.application.bot_data.setdefault("msg_cache", {})
     chat_id = mr.chat.id
     message_id = mr.message_id
+    author_id = cache.get((chat_id, message_id))
+    if author_id is None or (reactor_id is not None and reactor_id == author_id):
+        return  # нет в кэше или сам себе
     for r in mr.new_reaction:
-        emoji = getattr(r, "emoji", None) or ""
+        emoji = _get_emoji_from_reaction(r)
         if emoji == "🤡":
-            new_rating = _apply_rating_to_user(chat_id, message_id, -10, cache, emoji)
-            if new_rating is not None:
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"🤡 -10. Рейтинг: {new_rating}",
-                    )
-                except BadRequest:
-                    pass
+            new_rating = add_to_user_rating(author_id, -10)
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=f"🤡 -10. Рейтинг: {new_rating}")
+            except BadRequest:
+                pass
             return
         if emoji == "🔥":
-            new_rating = _apply_rating_to_user(chat_id, message_id, 10, cache, emoji)
-            if new_rating is not None:
-                try:
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=f"🔥 +10. Рейтинг: {new_rating}",
-                    )
-                except BadRequest:
-                    pass
+            new_rating = add_to_user_rating(author_id, 10)
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=f"🔥 +10. Рейтинг: {new_rating}")
+            except BadRequest:
+                pass
             return
 
 
 async def cmd_minus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reply с /minus — -10 автору сообщения."""
-    msg = update.message
-    if not msg or not msg.reply_to_message or not msg.reply_to_message.from_user:
-        await reply_and_cleanup(update, context, "Ответь /minus на чьё-то сообщение")
+    """/minus или reply — -10. /minus @user тоже работает."""
+    res = _resolve_target_user(update, context)
+    if res is None:
+        await reply_and_cleanup(update, context, "Ответь /minus на сообщение или напиши /minus @username")
         return
-    target_user = msg.reply_to_message.from_user
-    new_rating = add_to_user_rating(target_user.id, -10)
-    await reply_and_cleanup(update, context, f"📉 -10. Рейтинг @{target_user.username or target_user.id}: {new_rating}")
+    if res[0] == "self":
+        await reply_and_cleanup(update, context, "Самому себе менять рейтинг нельзя")
+        return
+    target_id, display = res
+    new_rating = add_to_user_rating(target_id, -10)
+    await reply_and_cleanup(update, context, f"📉 -10. Рейтинг {display}: {new_rating}")
 
 
 async def cmd_plus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Reply с /plus — +10 автору сообщения."""
-    msg = update.message
-    if not msg or not msg.reply_to_message or not msg.reply_to_message.from_user:
-        await reply_and_cleanup(update, context, "Ответь /plus на чьё-то сообщение")
+    """/plus или reply — +10. /plus @user тоже работает."""
+    res = _resolve_target_user(update, context)
+    if res is None:
+        await reply_and_cleanup(update, context, "Ответь /plus на сообщение или напиши /plus @username")
         return
-    target_user = msg.reply_to_message.from_user
-    new_rating = add_to_user_rating(target_user.id, 10)
-    await reply_and_cleanup(update, context, f"📈 +10. Рейтинг @{target_user.username or target_user.id}: {new_rating}")
+    if res[0] == "self":
+        await reply_and_cleanup(update, context, "Самому себе менять рейтинг нельзя")
+        return
+    target_id, display = res
+    new_rating = add_to_user_rating(target_id, 10)
+    await reply_and_cleanup(update, context, f"📈 +10. Рейтинг {display}: {new_rating}")
+
+
+def _user_display(user) -> str:
+    """Никнейм и имя для отображения."""
+    parts = []
+    if user.username:
+        parts.append(f"@{user.username}")
+    name = " ".join(filter(None, [user.first_name, user.last_name]))
+    if name:
+        parts.append(f"({name})")
+    return " ".join(parts) if parts else str(user.id)
 
 
 async def cmd_my(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -278,6 +334,7 @@ async def cmd_my(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     rating = get_user_rating(user.id)
     position = get_position(rating)
+    display = _user_display(user)
     try:
         await update.message.delete()
     except (BadRequest, Exception):
@@ -285,7 +342,7 @@ async def cmd_my(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
-            text=f"📊 Мой рейтинг: {rating}\n📍 Положение: {position}",
+            text=f"📊 Рейтинг {display}: {rating}\n📍 Положение: {position}",
         )
     except BadRequest:
         pass
@@ -297,10 +354,11 @@ HELP_TEXT = """📋 Команды бота:
 /danilaklass — плюс 10 к рейтингу Данилы
 /danilarating — рейтинг Данилы
 /my — мой рейтинг
-/minus — ответь на сообщение: -10 автору
-/plus — ответь на сообщение: +10 автору
+/minus — ответь на сообщение или /minus @user: -10
+/plus — ответь на сообщение или /plus @user: +10
 Реакция 🤡 на сообщение — -10 автору
 Реакция 🔥 на сообщение — +10 автору
+Самому себе менять рейтинг нельзя
 /help — этот список"""
 
 
@@ -365,14 +423,24 @@ def main() -> None:
 
     app.add_error_handler(error_handler)
 
-    # Кэш сообщений для реакций (chat_id, msg_id) -> author_id
+    # Кэш сообщений для реакций и username->user_id для /plus @user
     msg_cache = {}
+    users_by_username = {}
     app.bot_data["msg_cache"] = msg_cache
+    app.bot_data["users_by_username"] = users_by_username
     orig_process = app.process_update
     async def process_with_cache(update):
         if update.message and update.message.from_user:
-            key = (update.message.chat.id, update.message.message_id)
-            msg_cache[key] = update.message.from_user.id
+            msg = update.message
+            u = msg.from_user
+            key = (msg.chat.id, msg.message_id)
+            msg_cache[key] = u.id
+            if u.username:
+                users_by_username[u.username.lower()] = u.id
+            if msg.reply_to_message and msg.reply_to_message.from_user:
+                ru = msg.reply_to_message.from_user
+                if ru.username:
+                    users_by_username[ru.username.lower()] = ru.id
             if len(msg_cache) > 5000:
                 for k in list(msg_cache.keys())[:1000]:
                     del msg_cache[k]
@@ -380,7 +448,10 @@ def main() -> None:
     app.process_update = process_with_cache
 
     print("Бот запущен!")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    allowed = list(Update.ALL_TYPES) if Update.ALL_TYPES else ["message"]
+    if "message_reaction" not in allowed:
+        allowed.append("message_reaction")
+    app.run_polling(allowed_updates=allowed)
 
 
 if __name__ == "__main__":
