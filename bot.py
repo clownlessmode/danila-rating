@@ -10,9 +10,7 @@ from pathlib import Path
 
 from telegram import Update
 from telegram.error import BadRequest
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-
-from neiro import is_message_bad
+from telegram.ext import Application, CommandHandler, MessageHandler, MessageReactionHandler, filters, ContextTypes
 
 # Файл для хранения рейтинга
 DATA_FILE = Path(__file__).parent / "rating.json"
@@ -73,19 +71,45 @@ RATING_TIERS = [
 ]
 
 
-def get_rating() -> int:
-    """Загружает текущий рейтинг из файла."""
+def get_data() -> dict:
+    """Загружает данные из файла."""
     if DATA_FILE.exists():
         with open(DATA_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            return data.get("rating", 0)
-    return 0
+            return json.load(f)
+    return {"rating": 0, "users": {}}
+
+
+def save_data(data: dict) -> None:
+    """Сохраняет данные в файл."""
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def get_rating() -> int:
+    """Рейтинг Данилы."""
+    return get_data().get("rating", 0)
 
 
 def save_rating(rating: int) -> None:
-    """Сохраняет рейтинг в файл."""
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump({"rating": rating}, f, ensure_ascii=False, indent=2)
+    """Сохраняет рейтинг Данилы."""
+    data = get_data()
+    data["rating"] = rating
+    save_data(data)
+
+
+def get_user_rating(user_id: int) -> int:
+    """Рейтинг пользователя по user_id."""
+    return get_data().get("users", {}).get(str(user_id), 0)
+
+
+def add_to_user_rating(user_id: int, delta: int) -> int:
+    """Добавляет delta к рейтингу пользователя. Возвращает новый рейтинг."""
+    data = get_data()
+    users = data.setdefault("users", {})
+    uid = str(user_id)
+    users[uid] = users.get(uid, 0) + delta
+    save_data(data)
+    return users[uid]
 
 
 async def _cleanup_task(bot, chat_id, user_msg_id, bot_msg, delay: float) -> None:
@@ -159,23 +183,6 @@ class BlockChimiakin(filters.MessageFilter):
         return (message.from_user.username or "").lower() == CHEMIAKIN_USERNAME
 
 
-async def check_danila_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Проверяет сообщения Данилы через нейросеть. При нарушении — -10."""
-    text = (update.message.text or "").strip()
-    if not text or text.startswith("/"):
-        return
-    # Запускаем в executor, чтобы не блокировать event loop
-    is_bad = await asyncio.to_thread(is_message_bad, text)
-    if is_bad:  # если норм — молчим, не пишем ничего
-        rating = get_rating()
-        rating -= 10
-        save_rating(rating)
-        await reply_and_cleanup(
-            update, context,
-            f"НейроРодион посчитал что ты ужасно поступаешь -10\nРейтинг Данилы: {rating}",
-        )
-
-
 async def block_chemiakin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Полная блокировка chemiakin — не отвечаем, ничего не делаем."""
     pass
@@ -199,11 +206,101 @@ async def roast_self_liker(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
 
 
+def _apply_rating_to_user(chat_id: int, message_id: int, delta: int, cache: dict, emoji: str) -> int | None:
+    """Применяет delta к автору сообщения. Возвращает новый рейтинг или None."""
+    key = (chat_id, message_id)
+    author_id = cache.get(key)
+    if author_id is None:
+        return None
+    return add_to_user_rating(author_id, delta)
+
+
+async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Реакция 🤡 = -10, реакция 🔥 = +10 к автору сообщения."""
+    mr = update.message_reaction
+    if not mr or not mr.new_reaction:
+        return
+    cache = context.application.bot_data.setdefault("msg_cache", {})
+    chat_id = mr.chat.id
+    message_id = mr.message_id
+    for r in mr.new_reaction:
+        emoji = getattr(r, "emoji", None) or ""
+        if emoji == "🤡":
+            new_rating = _apply_rating_to_user(chat_id, message_id, -10, cache, emoji)
+            if new_rating is not None:
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"🤡 -10. Рейтинг: {new_rating}",
+                    )
+                except BadRequest:
+                    pass
+            return
+        if emoji == "🔥":
+            new_rating = _apply_rating_to_user(chat_id, message_id, 10, cache, emoji)
+            if new_rating is not None:
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"🔥 +10. Рейтинг: {new_rating}",
+                    )
+                except BadRequest:
+                    pass
+            return
+
+
+async def cmd_minus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reply с /minus — -10 автору сообщения."""
+    msg = update.message
+    if not msg or not msg.reply_to_message or not msg.reply_to_message.from_user:
+        await reply_and_cleanup(update, context, "Ответь /minus на чьё-то сообщение")
+        return
+    target_user = msg.reply_to_message.from_user
+    new_rating = add_to_user_rating(target_user.id, -10)
+    await reply_and_cleanup(update, context, f"📉 -10. Рейтинг @{target_user.username or target_user.id}: {new_rating}")
+
+
+async def cmd_plus(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Reply с /plus — +10 автору сообщения."""
+    msg = update.message
+    if not msg or not msg.reply_to_message or not msg.reply_to_message.from_user:
+        await reply_and_cleanup(update, context, "Ответь /plus на чьё-то сообщение")
+        return
+    target_user = msg.reply_to_message.from_user
+    new_rating = add_to_user_rating(target_user.id, 10)
+    await reply_and_cleanup(update, context, f"📈 +10. Рейтинг @{target_user.username or target_user.id}: {new_rating}")
+
+
+async def cmd_my(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Команда /my — мой рейтинг."""
+    user = update.effective_user
+    if not user:
+        return
+    rating = get_user_rating(user.id)
+    position = get_position(rating)
+    try:
+        await update.message.delete()
+    except (BadRequest, Exception):
+        pass
+    try:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"📊 Мой рейтинг: {rating}\n📍 Положение: {position}",
+        )
+    except BadRequest:
+        pass
+
+
 HELP_TEXT = """📋 Команды бота:
 
-/danilalox — минус 10 к рейтингу
-/danilaklass — плюс 10 к рейтингу
-/danilarating — показать текущий рейтинг и положение
+/danilalox — минус 10 к рейтингу Данилы
+/danilaklass — плюс 10 к рейтингу Данилы
+/danilarating — рейтинг Данилы
+/my — мой рейтинг
+/minus — ответь на сообщение: -10 автору
+/plus — ответь на сообщение: +10 автору
+Реакция 🤡 на сообщение — -10 автору
+Реакция 🔥 на сообщение — +10 автору
 /help — этот список"""
 
 
@@ -246,8 +343,9 @@ def main() -> None:
 
     app = Application.builder().token(token).build()
 
-    # danilarating и help — первыми, чтобы chemiakin тоже мог использовать
+    # danilarating, my, help — первыми
     app.add_handler(CommandHandler("danilarating", cmd_danilarating))
+    app.add_handler(CommandHandler("my", cmd_my))
     app.add_handler(CommandHandler("help", cmd_help))
     # Блокируем chemiakin для всего остального
     app.add_handler(MessageHandler(BlockChimiakin(), block_chemiakin))
@@ -255,9 +353,10 @@ def main() -> None:
     app.add_handler(CommandHandler("danilalox", cmd_danilalox))
     app.add_handler(CommandHandler("danilaklass", cmd_danila_klass))
     app.add_handler(CommandHandler("danila", cmd_danila_wrapper))
+    app.add_handler(CommandHandler("minus", cmd_minus))
+    app.add_handler(CommandHandler("plus", cmd_plus))
     app.add_handler(MessageHandler(filters.User(user_id=SELF_LIKER_ID) & filters.TEXT, roast_self_liker))
-    # Проверка сообщений Данилы нейросетью (перед block_chemiakin, т.к. Danila != chemiakin)
-    app.add_handler(MessageHandler(DanilaFilter() & filters.TEXT, check_danila_message))
+    app.add_handler(MessageReactionHandler(handle_message_reaction))
 
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
         if isinstance(context.error, BadRequest):
@@ -265,6 +364,21 @@ def main() -> None:
         raise context.error
 
     app.add_error_handler(error_handler)
+
+    # Кэш сообщений для реакций (chat_id, msg_id) -> author_id
+    msg_cache = {}
+    app.bot_data["msg_cache"] = msg_cache
+    orig_process = app.process_update
+    async def process_with_cache(update):
+        if update.message and update.message.from_user:
+            key = (update.message.chat.id, update.message.message_id)
+            msg_cache[key] = update.message.from_user.id
+            if len(msg_cache) > 5000:
+                for k in list(msg_cache.keys())[:1000]:
+                    del msg_cache[k]
+        return await orig_process(update)
+    app.process_update = process_with_cache
+
     print("Бот запущен!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
