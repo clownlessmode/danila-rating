@@ -147,55 +147,7 @@ def get_position(rating: int) -> str:
     return "Неизвестно"
 
 
-async def cmd_danilalox(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /danilalox — минус 10 к рейтингу."""
-    rating = get_rating()
-    rating -= 10
-    save_rating(rating)
-    await reply_and_cleanup(update, context, f"📉 -10. Рейтинг Данилы: {rating}")
-
-
-async def cmd_danila_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработка /danila klass (два слова)."""
-    if context.args and context.args[0].lower() == "klass":
-        await cmd_danila_klass(update, context)
-    else:
-        await reply_and_cleanup(update, context, "Использование: /danila klass — +10 к рейтингу")
-
-CHEMIAKIN_USERNAME = "chemiakin"
 PURPLETOOTH_USERNAME = "purpletooth"
-# Юзернейм Данилы — его сообщения проверяет нейросеть
-DANILA_USERNAME = "danilalox"  # укажи реальный @username в Telegram
-
-class DanilaFilter(filters.MessageFilter):
-    """Фильтр: True если сообщение от Данилы."""
-    def filter(self, message):
-        if not message or not message.from_user:
-            return False
-        return (message.from_user.username or "").lower() == DANILA_USERNAME
-
-
-class BlockChimiakin(filters.MessageFilter):
-    """Фильтр: True если сообщение от chemiakin."""
-    def filter(self, message):
-        if not message or not message.from_user:
-            return False
-        return (message.from_user.username or "").lower() == CHEMIAKIN_USERNAME
-
-
-async def block_chemiakin(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Полная блокировка chemiakin — не отвечаем, ничего не делаем."""
-    pass
-
-
-async def cmd_danila_klass(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /danila klass — плюс 10 к рейтингу."""
-    rating = get_rating()
-    rating += 10
-    save_rating(rating)
-    await reply_and_cleanup(update, context, f"📈 +10. Рейтинг Данилы: {rating}")
-
-
 SELF_LIKER_ID = 5301118406
 
 async def roast_self_liker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -259,7 +211,7 @@ def _resolve_target_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Реакция 🤡 = -10, реакция 🔥 = +10 к автору сообщения."""
+    """Реакция 🤡 = -10, реакция 🔥 = +10 к автору сообщения. Без сообщения в чат."""
     mr = update.message_reaction
     if not mr or not mr.new_reaction:
         return
@@ -273,18 +225,10 @@ async def handle_message_reaction(update: Update, context: ContextTypes.DEFAULT_
     for r in mr.new_reaction:
         emoji = _get_emoji_from_reaction(r)
         if emoji == "🤡":
-            new_rating = add_to_user_rating(author_id, -10)
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=f"🤡 -10. Рейтинг: {new_rating}")
-            except BadRequest:
-                pass
+            add_to_user_rating(author_id, -10)
             return
         if emoji == "🔥":
-            new_rating = add_to_user_rating(author_id, 10)
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=f"🔥 +10. Рейтинг: {new_rating}")
-            except BadRequest:
-                pass
+            add_to_user_rating(author_id, 10)
             return
 
 
@@ -327,14 +271,43 @@ def _user_display(user) -> str:
     return " ".join(parts) if parts else str(user.id)
 
 
+def _resolve_user_for_my(update: Update, context: ContextTypes.DEFAULT_TYPE) -> tuple | None:
+    """Для /my: возвращает (user_id, display) — себя или из @username."""
+    msg = update.message
+    sender = update.effective_user
+    if not msg or not sender:
+        return None
+    args = context.args or []
+    users_cache = context.application.bot_data.setdefault("users_by_username", {})
+    if not args:
+        return (sender.id, _user_display(sender))
+    for arg in args:
+        username = arg.lstrip("@").lower()
+        if not username:
+            continue
+        target_id = users_cache.get(username)
+        if target_id is not None:
+            return (target_id, f"@{username}")
+    if msg.entities:
+        for ent in msg.entities:
+            if ent.type == "text_mention" and hasattr(ent, "user") and ent.user:
+                target = ent.user
+                return (target.id, _user_display(target))
+    return None
+
+
 async def cmd_my(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /my — мой рейтинг."""
-    user = update.effective_user
-    if not user:
+    """Команда /my — мой рейтинг. /my @username — рейтинг другого."""
+    res = _resolve_user_for_my(update, context)
+    if res is None:
+        try:
+            await update.message.delete()
+        except (BadRequest, Exception):
+            pass
         return
-    rating = get_user_rating(user.id)
+    user_id, display = res
+    rating = get_user_rating(user_id)
     position = get_position(rating)
-    display = _user_display(user)
     try:
         await update.message.delete()
     except (BadRequest, Exception):
@@ -350,21 +323,19 @@ async def cmd_my(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 HELP_TEXT = """📋 Команды бота:
 
-/danilalox — минус 10 к рейтингу Данилы
-/danilaklass — плюс 10 к рейтингу Данилы
-/danilarating — рейтинг Данилы
 /my — мой рейтинг
+/my @username — рейтинг пользователя
 /minus — ответь на сообщение или /minus @user: -10
 /plus — ответь на сообщение или /plus @user: +10
-Реакция 🤡 на сообщение — -10 автору
-Реакция 🔥 на сообщение — +10 автору
+Реакция 🤡 на сообщение — -10 автору (тихо)
+Реакция 🔥 на сообщение — +10 автору (тихо)
 Самому себе менять рейтинг нельзя
 /help — этот список"""
 
 
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /help — список команд."""
-    await reply_and_cleanup(update, context, HELP_TEXT)
+    """Команда /help — список команд. Удаление через 10 сек."""
+    await reply_and_cleanup(update, context, HELP_TEXT, delay=10.0)
 
 
 async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -376,23 +347,6 @@ async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await reply_and_cleanup(update, context, "✅ Рейтинг сброшен на 0")
 
 
-async def cmd_danilarating(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Команда /danilarating — показывает социальный рейтинг. Удаляем только сообщение юзера."""
-    try:
-        await update.message.delete()
-    except (BadRequest, Exception):
-        pass
-    rating = get_rating()
-    position = get_position(rating)
-    try:
-        await context.bot.send_message(
-            chat_id=update.effective_chat.id,
-            text=f"📊 Социальный рейтинг Данилы: {rating}\n📍 Положение: {position}",
-        )
-    except BadRequest:
-        pass
-
-
 def main() -> None:
     token = "8584176205:AAGe7iVJrleWNLXM4mBYU6PyW4SPG2amKUU"
     if not token:
@@ -401,16 +355,9 @@ def main() -> None:
 
     app = Application.builder().token(token).build()
 
-    # danilarating, my, help — первыми
-    app.add_handler(CommandHandler("danilarating", cmd_danilarating))
     app.add_handler(CommandHandler("my", cmd_my))
     app.add_handler(CommandHandler("help", cmd_help))
-    # Блокируем chemiakin для всего остального
-    app.add_handler(MessageHandler(BlockChimiakin(), block_chemiakin))
     app.add_handler(CommandHandler("clear", cmd_clear))
-    app.add_handler(CommandHandler("danilalox", cmd_danilalox))
-    app.add_handler(CommandHandler("danilaklass", cmd_danila_klass))
-    app.add_handler(CommandHandler("danila", cmd_danila_wrapper))
     app.add_handler(CommandHandler("minus", cmd_minus))
     app.add_handler(CommandHandler("plus", cmd_plus))
     app.add_handler(MessageHandler(filters.User(user_id=SELF_LIKER_ID) & filters.TEXT, roast_self_liker))
