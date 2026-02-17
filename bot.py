@@ -300,6 +300,30 @@ def _resolve_user_for_my(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     return None
 
 
+async def cmd_top(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Топ по рейтингу."""
+    users = get_data().get("users", {})
+    if not users:
+        text = "📊 Топ пуст — пока никто не получил рейтинг"
+    else:
+        users_by_username = context.application.bot_data.get("users_by_username", {})
+        id_to_username = {uid: f"@{u}" for u, uid in users_by_username.items()}
+        sorted_users = sorted(users.items(), key=lambda x: int(x[1]), reverse=True)[:15]
+        lines = ["📊 Топ по рейтингу:"]
+        for i, (uid, rating) in enumerate(sorted_users, 1):
+            display = id_to_username.get(int(uid), f"ID:{uid}")
+            lines.append(f"{i}. {display}: {rating}")
+        text = "\n".join(lines)
+    try:
+        await update.message.delete()
+    except (BadRequest, Exception):
+        pass
+    try:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=text)
+    except BadRequest:
+        pass
+
+
 async def cmd_my(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Команда /my — мой рейтинг. /my @username — рейтинг другого."""
     res = _resolve_user_for_my(update, context)
@@ -329,6 +353,7 @@ HELP_TEXT = """📋 Команды бота:
 
 /my — мой рейтинг
 /my @username — рейтинг пользователя
+/top — топ по рейтингу
 /minus — ответь на сообщение или /minus @user: -10
 /plus — ответь на сообщение или /plus @user: +10
 Реакции на сообщение: положительные (+10) или отрицательные (-10), тихо
@@ -359,6 +384,7 @@ def main() -> None:
     app = Application.builder().token(token).build()
 
     app.add_handler(CommandHandler("my", cmd_my))
+    app.add_handler(CommandHandler("top", cmd_top))
     app.add_handler(CommandHandler("help", cmd_help))
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("minus", cmd_minus))
