@@ -160,15 +160,6 @@ def get_position(rating: int) -> str:
 
 
 PURPLETOOTH_USERNAME = "purpletooth"
-SELF_LIKER_ID = 5301118406
-
-async def roast_self_liker(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Если пишет юзер 5301118406 — ростим за самолайк."""
-    if update.effective_user and update.effective_user.id == SELF_LIKER_ID:
-        await reply_and_cleanup(
-            update, context, "Ты еблан, самолайк — это как самоотсос, че ты делаешь?"
-        )
-
 
 REACTION_POSITIVE = frozenset(("❤️", "👍", "🔥", "🥰", "👏", "😁", "🎉", "🤩", "🙏", "👌", "😍", "❤️‍🔥", "💯", "🤣", "🏆", "🍾", "💋", "😇", "🤝", "🤗", "🤪", "🆒", "💗", "😘", "😎", "🕊️", "😈"))
 REACTION_NEGATIVE = frozenset(("👎", "😱", "🤬", "😢", "🤮", "💩", "🤡", "🥱", "🥴", "💔", "🤨", "😐", "🖕", "😴", "😭", "🤓", "😨", "😡"))
@@ -411,7 +402,6 @@ def main() -> None:
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("minus", cmd_minus))
     app.add_handler(CommandHandler("plus", cmd_plus))
-    app.add_handler(MessageHandler(filters.User(user_id=SELF_LIKER_ID) & filters.TEXT, roast_self_liker))
     app.add_handler(MessageReactionHandler(handle_message_reaction))
 
     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
